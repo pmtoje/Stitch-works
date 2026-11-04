@@ -24,6 +24,19 @@ Any Node 20+ host works (Vercel, Render, Railway, Fly.io, a VPS with PM2/systemd
 7. **Backups** — enable daily database backups (Supabase PITR or `pg_dump` to off-site storage) **and** back up `STORAGE_DIR`. Test a restore before launch.
 8. **Monitoring** — watch server logs for `webhook error`, and Admin → Notification log for FAILED deliveries.
 
+## Vercel
+
+1. **Environment variables** — Project → Settings → Environment Variables. Add at least `DATABASE_URL`, `APP_URL`, `APP_ENCRYPTION_KEY`, `CRON_SECRET` and `PAYMENT_PROVIDER` (plus Paystack/SMTP keys), ticking **Production** (and **Preview** if you use preview deployments). Variables only apply to new deployments: **redeploy** after adding them. Without `DATABASE_URL` every page fails with `Environment variable not found: DATABASE_URL`.
+2. **Use a pooled connection string.** Serverless functions open many short connections. On Supabase use the *Transaction pooler* URL (port `6543`) with `?pgbouncer=true&connection_limit=1` appended as `DATABASE_URL`.
+3. **Run migrations against the production database** from your own machine (with the *direct* connection string, port `5432`), once now and after each schema change:
+   ```bash
+   DATABASE_URL="<direct connection string>" npx prisma migrate deploy
+   DATABASE_URL="<direct connection string>" SEED_DEMO=false SEED_DEMO_PASSWORD='<temp>' npm run db:seed
+   ```
+4. **Prisma client** — `npm install` runs `prisma generate` (`postinstall`), which Vercel's dependency cache requires.
+5. **File uploads** — Vercel's filesystem is read-only and not persistent, so uploads to `STORAGE_DIR` will fail there. Move storage to Supabase Storage, S3 or Vercel Blob (`putObject`/`getObject` in `src/lib/uploads.ts`) before relying on uploads.
+6. **Cron** — Vercel Cron sends `Authorization: Bearer $CRON_SECRET` automatically. Add a `crons` entry in `vercel.json` for `/api/cron`; the Hobby plan only allows daily runs, so on Hobby use an external scheduler for the 10-minute cadence.
+
 ## Pre-launch checklist
 
 - [ ] `PAYMENT_PROVIDER=paystack`, live key, webhook verified with a real ₦100 transaction
