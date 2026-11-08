@@ -5,10 +5,11 @@ See `.env.example` for a template.
 | Variable | Required | Purpose |
 |---|---|---|
 | `DATABASE_URL` | ✅ | PostgreSQL 14+ connection string. The `btree_gist` extension must be allowed (it is on Supabase, Neon, RDS). |
-| `APP_URL` | ✅ | Public base URL. Used for payment callbacks, email links, sitemap, metadata. |
+| `APP_URL` | ✅ (optional on Vercel) | Public base URL. Used for payment callbacks, email links, sitemap, metadata. Auto-detected on Vercel. |
 | `APP_ENCRYPTION_KEY` | ✅ | ≥32 chars. Encrypts TOTP secrets. Rotating it invalidates existing 2FA enrolments. |
 | `CRON_SECRET` | ✅ | Bearer token protecting `/api/cron`. |
 | `STORAGE_DIR` | — | Directory for uploads (default `./storage`). Must be persistent and backed up. |
+| `BLOB_READ_WRITE_TOKEN`, `BLOB_ACCESS` | — | Vercel Blob storage for uploads (token set automatically when a Blob store is connected; access `private` by default). |
 | `PAYMENT_PROVIDER` | ✅ | `paystack` in production. `mock` = built-in test mode. |
 | `PAYSTACK_SECRET_KEY` | ✅ prod | Paystack secret key; also verifies webhook signatures. |
 | `ALLOW_MOCK_PAYMENTS` | — | `true` to allow test mode when `NODE_ENV=production` (staging only). |
@@ -29,7 +30,7 @@ See `.env.example` for a template.
 | 4 | **Termii** (optional) | API key and approved sender ID | `TERMII_*` |
 | 5 | **WhatsApp Business Platform** (optional) | Meta business verification, phone number ID, permanent token, an approved template with one body variable | `WHATSAPP_*` |
 | 6 | **Domain + TLS** | DNS for the site and email | hosting |
-| 7 | **Persistent file storage** | Disk volume or object storage (swap `putObject/getObject` in `src/lib/uploads.ts` for Supabase Storage/S3) | `STORAGE_DIR` |
+| 7 | **Persistent file storage** | Vercel Blob (built in), or a persistent disk volume | `BLOB_READ_WRITE_TOKEN` or `STORAGE_DIR` |
 | 8 | **Scheduler** | Something that calls `/api/cron` every 10 minutes | `CRON_SECRET` |
 | 9 | **Google Analytics / Search Console** (optional) | GA4 ID, verification token; submit `/sitemap.xml` | `NEXT_PUBLIC_GA_ID`, `GOOGLE_SITE_VERIFICATION` |
 | 10 | **Business content** | Real photography, verified statistics, contact details, prices, policies (legal review), facility address | Admin → Website content / Facilities |

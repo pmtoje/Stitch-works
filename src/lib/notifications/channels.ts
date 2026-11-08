@@ -1,5 +1,6 @@
 // Delivery channels. Each is optional and activates when its credentials are configured.
 import nodemailer from "nodemailer";
+import { appUrl } from "@/lib/app-url";
 
 export interface Channel {
   name: "EMAIL" | "SMS" | "WHATSAPP";
@@ -7,7 +8,6 @@ export interface Channel {
   send(to: string, subject: string, body: string, link?: string | null): Promise<void>;
 }
 
-const appUrl = () => process.env.APP_URL ?? "http://localhost:3000";
 
 export const emailChannel: Channel = {
   name: "EMAIL",

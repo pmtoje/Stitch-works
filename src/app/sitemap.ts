@@ -1,10 +1,11 @@
 import type { MetadataRoute } from "next";
 import { db } from "@/lib/db";
+import { appUrl } from "@/lib/app-url";
 
 export const dynamic = "force-dynamic";
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const base = process.env.APP_URL ?? "http://localhost:3000";
+  const base = appUrl();
   const statics = ["", "/about", "/services", "/book", "/bulk-production", "/tailors", "/academy", "/memberships", "/contact", "/faq", "/blog", "/verify"];
   const [courses, posts, policies] = await Promise.all([
     db.course.findMany({ where: { published: true }, select: { slug: true, updatedAt: true } }),

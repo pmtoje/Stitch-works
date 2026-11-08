@@ -1,14 +1,21 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { get, put } from "@vercel/blob";
 import path from "node:path";
 import { db } from "./db";
 import { randomToken } from "./crypto";
 import { AppError } from "./errors";
 
 /**
- * File storage. Local disk by default (STORAGE_DIR, outside the web root); swap
- * `putObject`/`getObject` for Supabase Storage or S3 in production.
+ * File storage.
+ *  - Vercel Blob when BLOB_READ_WRITE_TOKEN is set (connect a Blob store to the Vercel project).
+ *    Files are stored with `private` access by default (BLOB_ACCESS=public for a public store) and are
+ *    only ever served through /api/files/[id], which checks permissions.
+ *  - Otherwise local disk: STORAGE_DIR, else ./storage. On Vercel without Blob, /tmp is used so uploads
+ *    don't crash, but those files are temporary — connect a Blob store for anything real.
  */
-const STORAGE_DIR = process.env.STORAGE_DIR ?? path.join(process.cwd(), "storage");
+const useBlob = () => !!process.env.BLOB_READ_WRITE_TOKEN;
+const blobAccess = (): "public" | "private" => (process.env.BLOB_ACCESS === "public" ? "public" : "private");
+const storageDir = () => process.env.STORAGE_DIR ?? (process.env.VERCEL ? "/tmp/stitchworks-storage" : path.join(process.cwd(), "storage"));
 
 type Kind = { mime: string; ext: string; maxMb: number; test: (b: Buffer) => boolean };
 
@@ -45,15 +52,24 @@ export function detectKind(buf: Buffer, filename: string, allowed: string[]): Ki
   return kind;
 }
 
-async function putObject(key: string, buf: Buffer) {
-  const full = path.join(STORAGE_DIR, key);
+async function putObject(key: string, buf: Buffer, contentType: string) {
+  if (useBlob()) {
+    await put(key, buf, { access: blobAccess(), contentType, addRandomSuffix: false });
+    return;
+  }
+  const full = path.join(storageDir(), key);
   await mkdir(path.dirname(full), { recursive: true });
   await writeFile(full, buf);
 }
 
-export async function getObject(key: string) {
+export async function getObject(key: string): Promise<Buffer> {
   if (key.includes("..")) throw new AppError("Invalid key");
-  return readFile(path.join(STORAGE_DIR, key));
+  if (useBlob()) {
+    const r = await get(key, { access: blobAccess() });
+    if (!r || r.statusCode !== 200) throw new AppError("File not found", "NOT_FOUND", 404);
+    return Buffer.from(await new Response(r.stream).arrayBuffer());
+  }
+  return readFile(path.join(storageDir(), key));
 }
 
 export async function saveUpload(file: File, opts: { ownerId: string | null; purpose: keyof typeof PURPOSE_KINDS; visibility?: "PUBLIC" | "PRIVATE" }) {
@@ -62,7 +78,7 @@ export async function saveUpload(file: File, opts: { ownerId: string | null; pur
   const buf = Buffer.from(await file.arrayBuffer());
   const kind = detectKind(buf, file.name, PURPOSE_KINDS[opts.purpose]);
   const key = `${opts.purpose.toLowerCase()}/${new Date().toISOString().slice(0, 7)}/${randomToken(18)}.${kind.ext}`;
-  await putObject(key, buf);
+  await putObject(key, buf, kind.mime);
   const safeName = file.name.replace(/[^\w.\- ()]/g, "_").slice(0, 120);
   return db.upload.create({ data: { ownerId: opts.ownerId, storageKey: key, originalName: safeName, mimeType: kind.mime, size: buf.length, visibility: opts.visibility ?? "PRIVATE", purpose: opts.purpose } });
 }

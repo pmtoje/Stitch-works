@@ -8,6 +8,7 @@ import { clearSessionCookie, clientIp, sessionToken, setSessionCookie } from "@/
 import { enforceRateLimit } from "@/lib/ratelimit";
 import { notify, kickDispatch } from "@/lib/notifications";
 import { AppError } from "@/lib/errors";
+import { STAFF_ROLES } from "@/lib/auth/rbac";
 import { headers } from "next/headers";
 
 const safeNext = (n: string) => (n.startsWith("/") && !n.startsWith("//") ? n : "/dashboard");
@@ -20,7 +21,12 @@ export const loginAction = safeAction(async (_s: unknown, fd: FormData) => {
   const r = await authenticate(email, str(fd, "password"), { ip, userAgent: (await headers()).get("user-agent") ?? undefined });
   if (!r.ok) throw new AppError(r.error);
   await setSessionCookie(r.sessionToken);
-  const next = safeNext(str(fd, "next"));
+  let next = safeNext(str(fd, "next"));
+  if (!str(fd, "next")) {
+    // Staff land in the management console by default.
+    const roles = await db.userRole.findMany({ where: { user: { email } }, select: { role: true } });
+    if (roles.some((x) => STAFF_ROLES.includes(x.role))) next = "/admin";
+  }
   redirect(r.mfaRequired ? `/login/2fa?next=${encodeURIComponent(next)}` : next);
 });
 

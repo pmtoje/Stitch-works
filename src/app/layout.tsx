@@ -2,8 +2,9 @@ import type { Metadata, Viewport } from "next";
 import "@fontsource-variable/fraunces";
 import "@fontsource-variable/inter-tight";
 import "./globals.css";
+import { appUrl } from "@/lib/app-url";
 
-const site = process.env.APP_URL ?? "http://localhost:3000";
+const site = appUrl();
 
 export const metadata: Metadata = {
   metadataBase: new URL(site),

@@ -10,7 +10,9 @@ import bcrypt from "bcryptjs";
 
 const db = new PrismaClient();
 const DEMO = (process.env.SEED_DEMO ?? (process.env.NODE_ENV === "production" ? "false" : "true")) === "true";
-const DEMO_PASSWORD = process.env.SEED_DEMO_PASSWORD ?? "StitchWorks2026!";
+// Locally a known default is convenient; on hosted/production builds a password must be supplied.
+const HOSTED = process.env.VERCEL === "1" || process.env.NODE_ENV === "production";
+const DEMO_PASSWORD = process.env.SEED_DEMO_PASSWORD ?? (HOSTED ? null : "StitchWorks2026!");
 
 const CATEGORIES = [
   ["industrial-straight-stitch", "Industrial straight-stitch machines", "Lockstitch machines for seams and topstitching."],
@@ -33,7 +35,7 @@ async function user(email: string, fullName: string, roles: Role[], phone?: stri
       fullName,
       phone,
       emailVerifiedAt: new Date(),
-      passwordHash: await bcrypt.hash(DEMO_PASSWORD, 12),
+      passwordHash: await bcrypt.hash(DEMO_PASSWORD!, 12),
       roles: { create: roles.map((role) => ({ role, facilityId: role === "FACILITY_MANAGER" ? facilityId ?? null : null })) },
     },
   });
@@ -63,7 +65,8 @@ async function main() {
   ];
   if ((await db.faq.count()) === 0) for (const [i, [category, question, answer]] of faqs.entries()) await db.faq.create({ data: { category, question, answer, sortOrder: i } });
 
-  await user(process.env.SEED_ADMIN_EMAIL ?? "admin@stitchworks.ng", "StitchWorks Administrator", ["SUPER_ADMIN"]);
+  if (DEMO_PASSWORD) await user(process.env.SEED_ADMIN_EMAIL ?? "admin@stitchworks.ng", "StitchWorks Administrator", ["SUPER_ADMIN"]);
+  else console.warn("! SEED_DEMO_PASSWORD not set: the administrator account was not created. Set it and redeploy to create it.");
 
   if (!DEMO) return console.log("Seeded base data (SEED_DEMO=false).");
 
@@ -196,7 +199,7 @@ async function main() {
       },
     });
   }
-  console.log(`Seeded demo data. Demo accounts use password: ${DEMO_PASSWORD}`);
+  console.log(process.env.SEED_DEMO_PASSWORD ? "Seeded demo data (accounts use SEED_DEMO_PASSWORD)." : `Seeded demo data. Demo accounts use password: ${DEMO_PASSWORD}`);
 }
 
 main()

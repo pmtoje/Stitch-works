@@ -26,16 +26,20 @@ Any Node 20+ host works (Vercel, Render, Railway, Fly.io, a VPS with PM2/systemd
 
 ## Vercel
 
-1. **Environment variables** — Project → Settings → Environment Variables. Add at least `DATABASE_URL`, `APP_URL`, `APP_ENCRYPTION_KEY`, `CRON_SECRET` and `PAYMENT_PROVIDER` (plus Paystack/SMTP keys), ticking **Production** (and **Preview** if you use preview deployments). Variables only apply to new deployments: **redeploy** after adding them. Without `DATABASE_URL` every page fails with `Environment variable not found: DATABASE_URL`.
-2. **Use a pooled connection string.** Serverless functions open many short connections. On Supabase use the *Transaction pooler* URL (port `6543`) with `?pgbouncer=true&connection_limit=1` appended as `DATABASE_URL`.
-3. **Run migrations against the production database** from your own machine (with the *direct* connection string, port `5432`), once now and after each schema change:
-   ```bash
-   DATABASE_URL="<direct connection string>" npx prisma migrate deploy
-   DATABASE_URL="<direct connection string>" SEED_DEMO=false SEED_DEMO_PASSWORD='<temp>' npm run db:seed
-   ```
-4. **Prisma client** — `npm install` runs `prisma generate` (`postinstall`), which Vercel's dependency cache requires.
-5. **File uploads** — Vercel's filesystem is read-only and not persistent, so uploads to `STORAGE_DIR` will fail there. Move storage to Supabase Storage, S3 or Vercel Blob (`putObject`/`getObject` in `src/lib/uploads.ts`) before relying on uploads.
-6. **Cron** — Vercel Cron sends `Authorization: Bearer $CRON_SECRET` automatically. Add a `crons` entry in `vercel.json` for `/api/cron`; the Hobby plan only allows daily runs, so on Hobby use an external scheduler for the 10-minute cadence.
+The build (`npm run build` → `scripts/build.mjs`) detects Vercel and, before building, **applies database migrations and the idempotent seed**. There is nothing to run from your own machine.
+
+1. **Database.** Storage → Create Database → **Neon (Postgres)** → connect it to the project for **Production** and **Preview**. This sets `DATABASE_URL` (pooled) and `DATABASE_URL_UNPOOLED` (used for migrations). Vercel's Supabase integration also works (`POSTGRES_PRISMA_URL` / `POSTGRES_URL_NON_POOLING`). Without a database the build stops with instructions.
+2. **File storage.** Storage → Create → **Blob** (choose *Private*) → connect it to the project. This sets `BLOB_READ_WRITE_TOKEN`. Use `BLOB_ACCESS=public` only if you created a public store. Without Blob, uploads go to `/tmp`, which works but is wiped between requests and deployments.
+3. **Environment variables.** Settings → Environment Variables (Production and Preview):
+   - `APP_ENCRYPTION_KEY` — ≥32 random characters (`openssl rand -base64 48`)
+   - `SEED_DEMO_PASSWORD` — password for the seeded administrator (`admin@stitchworks.ng`) and demo accounts. Without it, no administrator account is created.
+   - `SEED_DEMO=true` — optional: loads the sample Jos facility, machines, plans, courses and demo accounts so you can try every workflow
+   - Payments: `PAYMENT_PROVIDER=paystack` + `PAYSTACK_SECRET_KEY`, **or** for a trial `PAYMENT_PROVIDER=mock` + `ALLOW_MOCK_PAYMENTS=true` (no money moves; remove before launch)
+   - `CRON_SECRET`, SMTP settings as in `docs/ENVIRONMENT.md`
+   - `APP_URL` is optional on Vercel — the production domain or preview branch URL is detected automatically.
+4. **Redeploy.** Deployments → ⋯ → Redeploy. New variables only apply to new deployments.
+5. **Sign in** at `/login` as `admin@stitchworks.ng` with `SEED_DEMO_PASSWORD`, change the password, and enable two-factor authentication. Seeding never overwrites existing accounts, so changing the variable later does not change existing passwords.
+6. **Cron.** Vercel Cron sends `Authorization: Bearer $CRON_SECRET` automatically. Add a `crons` entry in `vercel.json` for `/api/cron`; the Hobby plan only allows daily runs, so on Hobby use an external scheduler for the 10-minute cadence.
 
 ## Pre-launch checklist
 

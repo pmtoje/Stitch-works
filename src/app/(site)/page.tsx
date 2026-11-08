@@ -4,6 +4,7 @@ import { getContent, resolveStats } from "@/lib/cms";
 import { ImageSlot } from "@/components/ui/image-slot";
 import { Eyebrow, LinkButton, SectionHeading } from "@/components/ui";
 import { naira } from "@/lib/format";
+import { appUrl } from "@/lib/app-url";
 
 export const dynamic = "force-dynamic";
 
@@ -303,7 +304,7 @@ export default async function HomePage() {
             name: "StitchWorks Collective",
             description: hero.sub,
             address: { "@type": "PostalAddress", addressLocality: "Jos", addressRegion: "Plateau", addressCountry: "NG" },
-            url: process.env.APP_URL,
+            url: appUrl(),
             makesOffer: ["Sewing machine rental", "Tailoring workspace rental", "Bulk uniform production", "Tailoring training"].map((n) => ({ "@type": "Offer", itemOffered: { "@type": "Service", name: n } })),
           }).replace(/</g, "\\u003c"),
         }}

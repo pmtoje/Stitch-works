@@ -5,7 +5,7 @@
   "scripts": {
     "postinstall": "prisma generate",
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/build.mjs",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
@@ -23,6 +23,7 @@
     "@fontsource-variable/fraunces": "^5.2.8",
     "@fontsource-variable/inter-tight": "^5.2.7",
     "@prisma/client": "^6.19.3",
+    "@vercel/blob": "^2.8.2",
     "bcryptjs": "^3.0.2",
     "clsx": "^2.1.1",
     "exceljs": "^4.4.0",

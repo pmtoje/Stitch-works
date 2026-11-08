@@ -1,6 +1,7 @@
 import { db } from "../db";
 import { hmacHex, safeEqual } from "../crypto";
 import { AppError } from "../errors";
+import { appUrl } from "@/lib/app-url";
 
 export type InitResult = { authorizationUrl: string; providerRef?: string };
 export type VerifyResult = { status: "success" | "failed" | "pending" | "abandoned"; amount: number; currency: string; providerRef?: string; channel?: string; raw: unknown };
@@ -12,7 +13,6 @@ export interface PaymentProvider {
   verifyWebhookSignature(rawBody: string, signature: string | null): boolean;
 }
 
-const appUrl = () => process.env.APP_URL ?? "http://localhost:3000";
 
 /** Paystack (https://paystack.com/docs/api). Amounts are sent in kobo. */
 export const paystack: PaymentProvider = {

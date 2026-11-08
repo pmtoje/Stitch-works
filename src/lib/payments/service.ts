@@ -12,8 +12,8 @@ import { onBookingPaid } from "../booking/service";
 import { onMembershipPaid } from "../memberships";
 import { onAcademyInvoicePaid } from "../academy/service";
 import { onProductionInvoicePaid } from "../production/orders";
+import { appUrl } from "@/lib/app-url";
 
-const appUrl = () => process.env.APP_URL ?? "http://localhost:3000";
 
 /** Amount the customer should pay now for this invoice. */
 async function payableNow(tx: Tx | typeof db, invoiceId: string) {
