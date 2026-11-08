@@ -1,0 +1,1361 @@
+// StitchWorks Collective — integrated platform schema.
+// One shared model for users, facilities, equipment, money and audit so that
+// Production, Academy and Marketplace never diverge into separate apps.
+//
+// Money convention: all amounts are whole Naira (Int). Gateways receive kobo
+// (amount * 100) at the integration boundary only.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────── Identity & access ─────────────────────────────
+
+enum Role {
+  CUSTOMER
+  CORPORATE_CLIENT
+  TAILOR
+  STUDENT
+  INSTRUCTOR
+  FACILITY_MANAGER
+  PRODUCTION_MANAGER
+  FINANCE_OFFICER
+  QC_OFFICER
+  ACADEMY_ADMIN
+  SUPER_ADMIN
+}
+
+model User {
+  id               String    @id @default(cuid())
+  email            String    @unique
+  passwordHash     String?
+  fullName         String
+  phone            String?
+  emailVerifiedAt  DateTime?
+  totpSecretEnc    String? // AES-256-GCM encrypted TOTP secret
+  totpEnabledAt    DateTime?
+  disabledAt       DateTime?
+  failedLoginCount Int       @default(0)
+  lockedUntil      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  roles              UserRole[]
+  sessions           Session[]
+  tokens             AuthToken[]
+  organisation       Organisation?       @relation(fields: [organisationId], references: [id])
+  organisationId     String?
+  tailor             Tailor?
+  instructor         Instructor?
+  bookings           Booking[]           @relation("BookingCustomer")
+  bulkOrders         BulkOrder[]         @relation("BulkOrderCustomer")
+  invoices           Invoice[]
+  payments           Payment[]
+  memberships        Membership[]
+  tailorApplications TailorApplication[]
+  studentApplications StudentApplication[]
+  enrolments         Enrolment[]
+  notifications      Notification[]
+  measurementProfiles MeasurementProfile[]
+  auditLogs          AuditLog[]          @relation("AuditActor")
+  uploads            Upload[]
+}
+
+model UserRole {
+  id         String    @id @default(cuid())
+  userId     String
+  role       Role
+  // When set, the role only applies to this facility (e.g. facility managers).
+  facilityId String?
+  createdAt  DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  facility   Facility? @relation(fields: [facilityId], references: [id])
+
+  @@unique([userId, role, facilityId])
+  @@index([role])
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique
+  userId     String
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  expiresAt  DateTime
+  // Set once the second factor is satisfied (or not required).
+  mfaPassed  Boolean  @default(false)
+  ip         String?
+  userAgent  String?
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+enum AuthTokenType {
+  EMAIL_VERIFY
+  PASSWORD_RESET
+  ACCOUNT_SETUP
+}
+
+model AuthToken {
+  id        String        @id @default(cuid())
+  tokenHash String        @unique
+  type      AuthTokenType
+  userId    String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime      @default(now())
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type])
+}
+
+model RateLimit {
+  key         String   @id
+  count       Int
+  windowStart DateTime
+}
+
+enum OrganisationType {
+  SCHOOL
+  CORPORATE
+  GOVERNMENT
+  NGO
+  HOSPITALITY
+  SECURITY
+  FASHION_BRAND
+  EVENTS
+  RELIGIOUS
+  HEALTHCARE
+  INDIVIDUAL
+  OTHER
+}
+
+model Organisation {
+  id        String           @id @default(cuid())
+  name      String
+  type      OrganisationType
+  address   String?
+  phone     String?
+  email     String?
+  createdAt DateTime         @default(now())
+  users     User[]
+  bulkOrders BulkOrder[]
+}
+
+// ───────────────────────────── Facilities & equipment ────────────────────────
+
+model Facility {
+  id                   String   @id @default(cuid())
+  slug                 String   @unique
+  name                 String
+  address              String
+  city                 String
+  state                String
+  phone                String?
+  email                String?
+  // { "mon": ["08:00","18:00"], ..., "sun": null }
+  operatingHours       Json
+  // Booking rules
+  requiresApproval     Boolean  @default(false)
+  minBookingHours      Int      @default(1)
+  maxAdvanceDays       Int      @default(60)
+  maxConsecutiveDays   Int      @default(7)
+  paymentHoldMinutes   Int      @default(30)
+  cancellationHours    Int      @default(24) // free cancellation window before start
+  depositPercent       Int      @default(0) // % of booking total required upfront (0 = full)
+  active               Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  roles         UserRole[]
+  workstations  Workstation[]
+  equipment     Equipment[]
+  rateCards     RateCard[]
+  bookings      Booking[]
+  tailors       Tailor[]
+  courseSessions CourseSession[]
+  productionJobs ProductionJob[]
+  materials     MaterialItem[]
+}
+
+model Workstation {
+  id          String     @id @default(cuid())
+  facilityId  String
+  code        String // e.g. WS-01
+  name        String
+  description String?
+  hourlyRate  Int
+  halfDayRate Int
+  fullDayRate Int
+  multiDayRate Int?
+  active      Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+  facility    Facility   @relation(fields: [facilityId], references: [id])
+  bookingItems BookingItem[]
+  maintenance MaintenanceWindow[]
+
+  @@unique([facilityId, code])
+}
+
+model EquipmentCategory {
+  id          String      @id @default(cuid())
+  slug        String      @unique
+  name        String
+  description String?
+  sortOrder   Int         @default(0)
+  active      Boolean     @default(true)
+  equipment   Equipment[]
+  rateCards   RateCard[]
+}
+
+// Category-level default rates per facility. An individual machine may override.
+model RateCard {
+  id              String            @id @default(cuid())
+  facilityId      String
+  categoryId      String
+  hourlyRate      Int
+  halfDayRate     Int
+  fullDayRate     Int
+  multiDayRate    Int? // per-day rate for 2+ consecutive days
+  securityDeposit Int               @default(0)
+  facility        Facility          @relation(fields: [facilityId], references: [id])
+  category        EquipmentCategory @relation(fields: [categoryId], references: [id])
+
+  @@unique([facilityId, categoryId])
+}
+
+enum EquipmentStatus {
+  AVAILABLE
+  IN_USE
+  UNDER_MAINTENANCE
+  OUT_OF_SERVICE
+  RETIRED
+}
+
+enum EquipmentCondition {
+  NEW
+  EXCELLENT
+  GOOD
+  FAIR
+  POOR
+}
+
+model Equipment {
+  id              String             @id @default(cuid())
+  assetTag        String             @unique // e.g. SW-JOS-SS-001
+  name            String
+  categoryId      String
+  facilityId      String
+  brand           String?
+  model           String?
+  serialNumber    String?
+  condition       EquipmentCondition @default(GOOD)
+  status          EquipmentStatus    @default(AVAILABLE)
+  acquiredAt      DateTime?
+  acquisitionCost Int?
+  // Optional per-machine override of the category rate card.
+  hourlyRate      Int?
+  halfDayRate     Int?
+  fullDayRate     Int?
+  multiDayRate    Int?
+  bookable        Boolean            @default(true)
+  notes           String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  category        EquipmentCategory  @relation(fields: [categoryId], references: [id])
+  facility        Facility           @relation(fields: [facilityId], references: [id])
+  bookingItems    BookingItem[]
+  maintenance     MaintenanceWindow[]
+  serviceLogs     EquipmentServiceLog[]
+  maintenancePlans MaintenancePlan[]
+
+  @@index([facilityId, categoryId])
+}
+
+// Blocks availability for a period (planned maintenance or unplanned downtime).
+model MaintenanceWindow {
+  id            String       @id @default(cuid())
+  equipmentId   String?
+  workstationId String?
+  startsAt      DateTime
+  endsAt        DateTime
+  reason        String
+  kind          String       @default("PLANNED") // PLANNED | DOWNTIME | DAMAGE
+  createdById   String?
+  createdAt     DateTime     @default(now())
+  equipment     Equipment?   @relation(fields: [equipmentId], references: [id])
+  workstation   Workstation? @relation(fields: [workstationId], references: [id])
+
+  @@index([equipmentId, startsAt, endsAt])
+}
+
+model MaintenancePlan {
+  id            String    @id @default(cuid())
+  equipmentId   String
+  task          String
+  intervalDays  Int
+  lastDoneAt    DateTime?
+  nextDueAt     DateTime
+  equipment     Equipment @relation(fields: [equipmentId], references: [id])
+}
+
+model EquipmentServiceLog {
+  id          String    @id @default(cuid())
+  equipmentId String
+  kind        String // SERVICE | REPAIR | DAMAGE | INSPECTION
+  description String
+  cost        Int       @default(0)
+  downtimeHours Int     @default(0)
+  bookingId   String? // damage linked to a booking
+  performedBy String?
+  performedAt DateTime  @default(now())
+  recordedById String?
+  equipment   Equipment @relation(fields: [equipmentId], references: [id])
+}
+
+// ───────────────────────────── Bookings ──────────────────────────────────────
+
+enum BookingStatus {
+  PENDING_PAYMENT
+  PENDING_APPROVAL
+  CONFIRMED
+  CHECKED_IN
+  COMPLETED
+  CANCELLED
+  REJECTED
+  EXPIRED
+}
+
+enum BookingDuration {
+  HOURLY
+  HALF_DAY
+  FULL_DAY
+  MULTI_DAY
+}
+
+model Booking {
+  id             String          @id @default(cuid())
+  reference      String          @unique
+  customerId     String
+  facilityId     String
+  status         BookingStatus
+  durationType   BookingDuration
+  startsAt       DateTime
+  endsAt         DateTime
+  days           Int             @default(1)
+  subtotal       Int
+  discount       Int             @default(0)
+  securityDeposit Int            @default(0)
+  total          Int
+  amountDueNow   Int
+  holdExpiresAt  DateTime?
+  notes          String?
+  adminNote      String?
+  cancelledAt    DateTime?
+  cancelReason   String?
+  remindedAt     DateTime?
+  rescheduledFromId String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  customer       User            @relation("BookingCustomer", fields: [customerId], references: [id])
+  facility       Facility        @relation(fields: [facilityId], references: [id])
+  items          BookingItem[]
+  invoices       Invoice[]
+
+  @@index([facilityId, startsAt])
+  @@index([customerId])
+}
+
+// `active` is maintained by the application and enforced by a Postgres
+// EXCLUDE constraint (see migration) so overlapping active reservations for
+// the same machine/workstation are impossible even under concurrency.
+model BookingItem {
+  id            String       @id @default(cuid())
+  bookingId     String
+  equipmentId   String?
+  workstationId String?
+  startsAt      DateTime
+  endsAt        DateTime
+  active        Boolean      @default(true)
+  unitPrice     Int
+  lineTotal     Int
+  description   String
+  booking       Booking      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  equipment     Equipment?   @relation(fields: [equipmentId], references: [id])
+  workstation   Workstation? @relation(fields: [workstationId], references: [id])
+
+  @@index([equipmentId, startsAt, endsAt])
+  @@index([workstationId, startsAt, endsAt])
+}
+
+// ───────────────────────────── Memberships ───────────────────────────────────
+
+model MembershipPlan {
+  id                 String       @id @default(cuid())
+  slug               String       @unique
+  name               String
+  description        String
+  fee                Int
+  validityDays       Int
+  benefits           String[]
+  workspaceAccess    String // human readable privileges
+  machineAccess      String
+  bookingDiscountPct Int          @default(0)
+  productionEligible Boolean      @default(false)
+  renewalTerms       String?
+  audience           String       @default("TAILOR") // TAILOR | STUDENT | BUSINESS
+  active             Boolean      @default(true)
+  sortOrder          Int          @default(0)
+  memberships        Membership[]
+}
+
+enum MembershipStatus {
+  PENDING_PAYMENT
+  PENDING_APPROVAL
+  ACTIVE
+  EXPIRED
+  SUSPENDED
+  CANCELLED
+}
+
+model Membership {
+  id         String           @id @default(cuid())
+  userId     String
+  planId     String
+  status     MembershipStatus
+  startsAt   DateTime?
+  expiresAt  DateTime?
+  renewalReminderAt DateTime?
+  expiryNotifiedAt  DateTime?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+  user       User             @relation(fields: [userId], references: [id])
+  plan       MembershipPlan   @relation(fields: [planId], references: [id])
+  invoices   Invoice[]
+
+  @@index([userId, status])
+}
+
+// ───────────────────────────── Tailors ───────────────────────────────────────
+
+enum TailorApplicationStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  SHORTLISTED
+  ASSESSMENT_SCHEDULED
+  APPROVED
+  REJECTED
+  ONBOARDING
+  ACTIVE
+}
+
+model TailorApplication {
+  id               String                  @id @default(cuid())
+  reference        String                  @unique
+  userId           String
+  fullName         String
+  phone            String
+  email            String
+  address          String
+  state            String
+  lga              String
+  dateOfBirth      DateTime?
+  yearsExperience  Int
+  specialisations  String[]
+  garmentTypes     String[]
+  machineSkills    String[]
+  previousWork     String
+  workingArrangement String
+  interests        String[] // WORKSPACE_MEMBERSHIP, MACHINE_RENTAL, PIECE_RATE, FULL_TIME, PART_TIME, INSTRUCTOR
+  references       String?
+  preferredFacilityId String?
+  status           TailorApplicationStatus @default(SUBMITTED)
+  assessmentAt     DateTime?
+  assessmentNotes  String?
+  decidedAt        DateTime?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  user             User                    @relation(fields: [userId], references: [id])
+  comments         ApplicationComment[]
+  files            Upload[]                @relation("TailorApplicationFiles")
+}
+
+model ApplicationComment {
+  id            String            @id @default(cuid())
+  applicationId String
+  authorId      String
+  body          String
+  createdAt     DateTime          @default(now())
+  application   TailorApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  VERIFIED
+  SUSPENDED
+}
+
+model Tailor {
+  id              String             @id @default(cuid())
+  code            String             @unique // SW-T-0001
+  userId          String             @unique
+  facilityId      String?
+  bio             String?
+  photoUploadId   String?
+  specialisations String[]
+  machineSkills   String[]
+  yearsExperience Int
+  verification    VerificationStatus @default(VERIFIED)
+  rating          Float?
+  createdAt       DateTime           @default(now())
+  user            User               @relation(fields: [userId], references: [id])
+  facility        Facility?          @relation(fields: [facilityId], references: [id])
+  portfolio       PortfolioItem[]
+  teamMemberships TeamMember[]
+  allocations     ProductionAllocation[]
+  jobApplications JobApplication[]
+  earnings        PieceRateEarning[]
+}
+
+model PortfolioItem {
+  id        String   @id @default(cuid())
+  tailorId  String
+  title     String
+  uploadId  String
+  createdAt DateTime @default(now())
+  tailor    Tailor   @relation(fields: [tailorId], references: [id], onDelete: Cascade)
+  upload    Upload   @relation(fields: [uploadId], references: [id])
+}
+
+model TailorTeam {
+  id        String       @id @default(cuid())
+  name      String
+  leadId    String?
+  createdAt DateTime     @default(now())
+  members   TeamMember[]
+  allocations ProductionAllocation[]
+}
+
+model TeamMember {
+  teamId   String
+  tailorId String
+  team     TailorTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  tailor   Tailor     @relation(fields: [tailorId], references: [id])
+
+  @@id([teamId, tailorId])
+}
+
+// ───────────────────────────── Bulk production ───────────────────────────────
+
+enum ProductionStatus {
+  ENQUIRY_RECEIVED
+  UNDER_REVIEW
+  QUOTATION_PREPARED
+  AWAITING_CUSTOMER_APPROVAL
+  AWAITING_DEPOSIT
+  ORDER_CONFIRMED
+  MATERIALS_SOURCING
+  FABRIC_CUTTING
+  PRODUCTION_IN_PROGRESS
+  QUALITY_CONTROL
+  FINISHING_PACKAGING
+  READY_FOR_DISPATCH
+  DISPATCHED
+  DELIVERED
+  COMPLETED
+  DECLINED
+  CANCELLED
+}
+
+model BulkOrder {
+  id               String           @id @default(cuid())
+  reference        String           @unique
+  customerId       String
+  organisationId   String?
+  orgName          String
+  orgType          OrganisationType
+  contactName      String
+  email            String
+  phone            String
+  address          String
+  description      String
+  designsCount     Int              @default(1)
+  sizes            String
+  fabricRequirements String?
+  colours          String?
+  branding         String?
+  embroidery       String?
+  printing         String?
+  requiredBy       DateTime?
+  deliveryLocation String
+  instructions     String?
+  budget           Int?
+  fabricSource     String // CUSTOMER | STITCHWORKS | UNDECIDED
+  status           ProductionStatus @default(ENQUIRY_RECEIVED)
+  assignedManagerId String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  customer         User             @relation("BulkOrderCustomer", fields: [customerId], references: [id])
+  organisation     Organisation?    @relation(fields: [organisationId], references: [id])
+  items            BulkOrderItem[]
+  attachments      Upload[]         @relation("BulkOrderFiles")
+  quotations       Quotation[]
+  invoices         Invoice[]
+  statusHistory    OrderStatusEvent[]
+  job              ProductionJob?
+  materialUsage    MaterialMovement[]
+
+  @@index([customerId])
+  @@index([status])
+}
+
+model BulkOrderItem {
+  id          String    @id @default(cuid())
+  orderId     String
+  garmentType String
+  quantity    Int
+  notes       String?
+  order       BulkOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+model OrderStatusEvent {
+  id        String           @id @default(cuid())
+  orderId   String
+  from      ProductionStatus?
+  to        ProductionStatus
+  note      String?
+  customerVisible Boolean    @default(true)
+  actorId   String?
+  createdAt DateTime         @default(now())
+  order     BulkOrder        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+enum QuotationStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  DECLINED
+  SUPERSEDED
+  EXPIRED
+}
+
+model Quotation {
+  id             String          @id @default(cuid())
+  reference      String          @unique
+  orderId        String
+  version        Int
+  status         QuotationStatus @default(DRAFT)
+  lines          QuotationLine[]
+  materialCost   Int
+  labourCost     Int
+  brandingCost   Int
+  logisticsCost  Int
+  taxPercent     Float           @default(0)
+  taxAmount      Int
+  subtotal       Int
+  total          Int
+  depositPercent Int             @default(50)
+  timelineDays   Int
+  paymentTerms   String
+  validUntil     DateTime
+  notes          String?
+  preparedById   String
+  sentAt         DateTime?
+  respondedAt    DateTime?
+  responseNote   String?
+  createdAt      DateTime        @default(now())
+  order          BulkOrder       @relation(fields: [orderId], references: [id])
+
+  @@unique([orderId, version])
+}
+
+model QuotationLine {
+  id          String    @id @default(cuid())
+  quotationId String
+  garmentType String
+  quantity    Int
+  unitPrice   Int
+  lineTotal   Int
+  quotation   Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+}
+
+enum ProductionJobStatus {
+  OPEN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model ProductionJob {
+  id              String              @id @default(cuid())
+  reference       String              @unique
+  orderId         String?             @unique
+  facilityId      String?
+  title           String
+  garmentType     String
+  description     String
+  totalQuantity   Int
+  defaultRate     Int // piece rate per accepted unit
+  dueDate         DateTime?
+  openToMarketplace Boolean           @default(false)
+  status          ProductionJobStatus @default(OPEN)
+  createdAt       DateTime            @default(now())
+  order           BulkOrder?          @relation(fields: [orderId], references: [id])
+  facility        Facility?           @relation(fields: [facilityId], references: [id])
+  allocations     ProductionAllocation[]
+  applications    JobApplication[]
+}
+
+enum JobApplicationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  WITHDRAWN
+}
+
+model JobApplication {
+  id        String               @id @default(cuid())
+  jobId     String
+  tailorId  String
+  quantity  Int
+  message   String?
+  status    JobApplicationStatus @default(PENDING)
+  createdAt DateTime             @default(now())
+  job       ProductionJob        @relation(fields: [jobId], references: [id])
+  tailor    Tailor               @relation(fields: [tailorId], references: [id])
+
+  @@unique([jobId, tailorId])
+}
+
+enum AllocationStatus {
+  ASSIGNED
+  IN_PROGRESS
+  SUBMITTED
+  COMPLETED
+  CANCELLED
+}
+
+// Exactly one of tailorId / teamId / partnerName identifies the assignee.
+model ProductionAllocation {
+  id           String           @id @default(cuid())
+  jobId        String
+  tailorId     String?
+  teamId       String?
+  partnerName  String?
+  supervisorId String?
+  quantity     Int
+  rate         Int
+  dueDate      DateTime?
+  status       AllocationStatus @default(ASSIGNED)
+  createdById  String
+  createdAt    DateTime         @default(now())
+  job          ProductionJob    @relation(fields: [jobId], references: [id])
+  tailor       Tailor?          @relation(fields: [tailorId], references: [id])
+  team         TailorTeam?      @relation(fields: [teamId], references: [id])
+  submissions  ProductionSubmission[]
+  earnings     PieceRateEarning[]
+}
+
+enum SubmissionStatus {
+  PENDING_QC
+  INSPECTED
+  APPROVED
+  REJECTED
+}
+
+model ProductionSubmission {
+  id           String               @id @default(cuid())
+  allocationId String
+  quantity     Int
+  note         String?
+  submittedById String
+  status       SubmissionStatus     @default(PENDING_QC)
+  createdAt    DateTime             @default(now())
+  allocation   ProductionAllocation @relation(fields: [allocationId], references: [id])
+  inspection   QualityInspection?
+}
+
+model QualityInspection {
+  id              String               @id @default(cuid())
+  submissionId    String               @unique
+  inspectedQty    Int
+  acceptedQty     Int
+  rejectedQty     Int
+  reworkQty       Int
+  defects         String[]
+  reworkNotes     String?
+  officerId       String
+  inspectedAt     DateTime             @default(now())
+  submission      ProductionSubmission @relation(fields: [submissionId], references: [id])
+}
+
+enum EarningStatus {
+  PENDING_APPROVAL
+  APPROVED
+  PAID
+  VOID
+}
+
+model PieceRateEarning {
+  id           String               @id @default(cuid())
+  allocationId String
+  tailorId     String?
+  inspectionId String               @unique
+  quantity     Int
+  rate         Int
+  amount       Int
+  status       EarningStatus        @default(PENDING_APPROVAL)
+  approvedById String?
+  approvedAt   DateTime?
+  paidAt       DateTime?
+  payoutRef    String?
+  createdAt    DateTime             @default(now())
+  allocation   ProductionAllocation @relation(fields: [allocationId], references: [id])
+  tailor       Tailor?              @relation(fields: [tailorId], references: [id])
+}
+
+// ───────────────────────────── Materials inventory ───────────────────────────
+
+model MaterialItem {
+  id         String             @id @default(cuid())
+  facilityId String
+  sku        String
+  name       String
+  kind       String // FABRIC | THREAD | TRIM | ZIP | BUTTON | PACKAGING | OTHER
+  unit       String // metres, pieces, cones
+  quantity   Float              @default(0)
+  reorderLevel Float            @default(0)
+  unitCost   Int                @default(0)
+  facility   Facility           @relation(fields: [facilityId], references: [id])
+  movements  MaterialMovement[]
+
+  @@unique([facilityId, sku])
+}
+
+model MaterialMovement {
+  id         String       @id @default(cuid())
+  itemId     String
+  orderId    String?
+  delta      Float // + receipt, - consumption
+  reason     String
+  actorId    String?
+  createdAt  DateTime     @default(now())
+  item       MaterialItem @relation(fields: [itemId], references: [id])
+  order      BulkOrder?   @relation(fields: [orderId], references: [id])
+}
+
+// ───────────────────────────── Customer measurements ─────────────────────────
+
+model MeasurementProfile {
+  id        String   @id @default(cuid())
+  userId    String
+  label     String
+  unit      String   @default("cm")
+  values    Json // { chest: 96, waist: 82, ... }
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ───────────────────────────── Finance ───────────────────────────────────────
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  VOID
+  REFUNDED
+}
+
+enum InvoicePurpose {
+  BOOKING
+  MEMBERSHIP
+  TUITION
+  APPLICATION_FEE
+  PRODUCTION_DEPOSIT
+  PRODUCTION_BALANCE
+  PRODUCTION_MILESTONE
+  OTHER
+}
+
+model Invoice {
+  id           String         @id @default(cuid())
+  number       String         @unique
+  userId       String
+  purpose      InvoicePurpose
+  status       InvoiceStatus  @default(ISSUED)
+  description  String
+  amount       Int
+  amountPaid   Int            @default(0)
+  amountRefunded Int          @default(0)
+  dueDate      DateTime?
+  bookingId    String?
+  membershipId String?
+  bulkOrderId  String?
+  enrolmentId  String?
+  studentApplicationId String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  user         User           @relation(fields: [userId], references: [id])
+  booking      Booking?       @relation(fields: [bookingId], references: [id])
+  membership   Membership?    @relation(fields: [membershipId], references: [id])
+  bulkOrder    BulkOrder?     @relation(fields: [bulkOrderId], references: [id])
+  enrolment    Enrolment?     @relation(fields: [enrolmentId], references: [id])
+  studentApplication StudentApplication? @relation(fields: [studentApplicationId], references: [id])
+  payments     Payment[]
+  refunds      Refund[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  ABANDONED
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  reference   String        @unique
+  invoiceId   String
+  userId      String
+  provider    String // paystack | flutterwave | mock | manual
+  method      String? // card, bank_transfer, cash, pos...
+  amount      Int
+  status      PaymentStatus @default(PENDING)
+  providerRef String?
+  rawResponse Json?
+  verifiedAt  DateTime?
+  recordedById String? // for manual/offline payments
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  invoice     Invoice       @relation(fields: [invoiceId], references: [id])
+  user        User          @relation(fields: [userId], references: [id])
+
+  @@index([invoiceId])
+  @@index([status, createdAt])
+}
+
+model Refund {
+  id         String   @id @default(cuid())
+  invoiceId  String
+  amount     Int
+  reason     String
+  method     String
+  recordedById String
+  createdAt  DateTime @default(now())
+  invoice    Invoice  @relation(fields: [invoiceId], references: [id])
+}
+
+// Simulated gateway state for the built-in test-mode provider.
+model MockGatewaySession {
+  reference String   @id
+  amount    Int
+  outcome   String? // success | failed
+  createdAt DateTime @default(now())
+}
+
+model WebhookEvent {
+  id         String   @id @default(cuid())
+  provider   String
+  eventId    String
+  type       String
+  payload    Json
+  processedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  @@unique([provider, eventId])
+}
+
+model Counter {
+  key   String @id
+  value Int
+}
+
+// ───────────────────────────── Academy ───────────────────────────────────────
+
+model Instructor {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  title     String?
+  bio       String?
+  specialisms String[]
+  active    Boolean  @default(true)
+  user      User     @relation(fields: [userId], references: [id])
+  courses   Course[]
+  sessions  CourseSession[]
+}
+
+model Course {
+  id               String          @id @default(cuid())
+  slug             String          @unique
+  title            String
+  summary          String
+  description      String
+  imageUploadId    String?
+  level            String // Foundation | Intermediate | Advanced | Professional
+  durationWeeks    Int
+  objectives       String[]
+  requirements     String[]
+  outline          Json // [{ title, topics: [] }]
+  format           String // In-person | Blended | Weekend
+  fee              Int
+  applicationFee   Int             @default(0)
+  certification    String
+  instructorId     String?
+  published        Boolean         @default(false)
+  sortOrder        Int             @default(0)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  instructor       Instructor?     @relation(fields: [instructorId], references: [id])
+  sessions         CourseSession[]
+  resources        LearningResource[]
+}
+
+model CourseSession {
+  id                  String      @id @default(cuid())
+  courseId            String
+  facilityId          String
+  name                String // e.g. "January 2027 Weekday Cohort"
+  startsOn            DateTime
+  endsOn              DateTime
+  schedule            String // e.g. "Mon, Wed, Fri · 9:00–13:00"
+  applicationDeadline DateTime
+  capacity            Int
+  feeOverride         Int?
+  instructorId        String?
+  open                Boolean     @default(true)
+  course              Course      @relation(fields: [courseId], references: [id])
+  facility            Facility    @relation(fields: [facilityId], references: [id])
+  instructor          Instructor? @relation(fields: [instructorId], references: [id])
+  applications        StudentApplication[]
+  enrolments          Enrolment[]
+  classes             ClassMeeting[]
+  assignments         Assignment[]
+}
+
+enum StudentApplicationStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  ACCEPTED
+  AWAITING_PAYMENT
+  REGISTERED
+  IN_TRAINING
+  COMPLETED
+  CERTIFIED
+  REJECTED
+  WITHDRAWN
+}
+
+model StudentApplication {
+  id          String                   @id @default(cuid())
+  reference   String                   @unique
+  userId      String
+  sessionId   String
+  fullName    String
+  phone       String
+  email       String
+  address     String
+  dateOfBirth DateTime?
+  education   String
+  experience  String
+  motivation  String
+  status      StudentApplicationStatus @default(SUBMITTED)
+  reviewNote  String?
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+  user        User                     @relation(fields: [userId], references: [id])
+  session     CourseSession            @relation(fields: [sessionId], references: [id])
+  files       Upload[]                 @relation("StudentApplicationFiles")
+  enrolment   Enrolment?
+  invoices    Invoice[]
+
+  @@unique([userId, sessionId])
+}
+
+enum EnrolmentStatus {
+  REGISTERED
+  IN_TRAINING
+  COMPLETED
+  WITHDRAWN
+}
+
+model Enrolment {
+  id            String             @id @default(cuid())
+  userId        String
+  sessionId     String
+  applicationId String             @unique
+  status        EnrolmentStatus    @default(REGISTERED)
+  finalScore    Float?
+  createdAt     DateTime           @default(now())
+  user          User               @relation(fields: [userId], references: [id])
+  session       CourseSession      @relation(fields: [sessionId], references: [id])
+  application   StudentApplication @relation(fields: [applicationId], references: [id])
+  attendance    Attendance[]
+  submissions   AssignmentSubmission[]
+  assessments   AssessmentResult[]
+  certificate   Certificate?
+  invoices      Invoice[]
+
+  @@unique([userId, sessionId])
+}
+
+model ClassMeeting {
+  id         String        @id @default(cuid())
+  sessionId  String
+  date       DateTime
+  topic      String
+  session    CourseSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  attendance Attendance[]
+}
+
+model Attendance {
+  id          String       @id @default(cuid())
+  meetingId   String
+  enrolmentId String
+  status      String // PRESENT | ABSENT | LATE | EXCUSED
+  recordedById String
+  meeting     ClassMeeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  enrolment   Enrolment    @relation(fields: [enrolmentId], references: [id])
+
+  @@unique([meetingId, enrolmentId])
+}
+
+model Assignment {
+  id          String        @id @default(cuid())
+  sessionId   String
+  title       String
+  brief       String
+  dueAt       DateTime
+  maxScore    Int           @default(100)
+  createdAt   DateTime      @default(now())
+  session     CourseSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  submissions AssignmentSubmission[]
+}
+
+model AssignmentSubmission {
+  id           String     @id @default(cuid())
+  assignmentId String
+  enrolmentId  String
+  text         String?
+  uploadId     String?
+  score        Int?
+  feedback     String?
+  submittedAt  DateTime   @default(now())
+  gradedAt     DateTime?
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  enrolment    Enrolment  @relation(fields: [enrolmentId], references: [id])
+
+  @@unique([assignmentId, enrolmentId])
+}
+
+model AssessmentResult {
+  id          String    @id @default(cuid())
+  enrolmentId String
+  title       String // e.g. "Practical: shirt construction"
+  score       Float
+  maxScore    Float
+  passed      Boolean
+  assessorId  String
+  remarks     String?
+  assessedAt  DateTime  @default(now())
+  enrolment   Enrolment @relation(fields: [enrolmentId], references: [id])
+}
+
+model LearningResource {
+  id        String   @id @default(cuid())
+  courseId  String
+  title     String
+  kind      String // DOCUMENT | VIDEO | LINK
+  url       String?
+  uploadId  String?
+  createdAt DateTime @default(now())
+  course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+}
+
+model Certificate {
+  id           String    @id @default(cuid())
+  code         String    @unique // public verification ID, e.g. SWA-2026-7KQ4-M2XD
+  enrolmentId  String    @unique
+  holderName   String
+  courseTitle  String
+  grade        String?
+  issuedAt     DateTime  @default(now())
+  issuedById   String
+  revokedAt    DateTime?
+  revokeReason String?
+  enrolment    Enrolment @relation(fields: [enrolmentId], references: [id])
+}
+
+// ───────────────────────────── Files ─────────────────────────────────────────
+
+model Upload {
+  id           String   @id @default(cuid())
+  ownerId      String?
+  storageKey   String   @unique
+  originalName String
+  mimeType     String
+  size         Int
+  // PUBLIC files (CMS media) are served to anyone; PRIVATE only to owner/staff.
+  visibility   String   @default("PRIVATE")
+  purpose      String // BULK_ORDER | PORTFOLIO | APPLICATION | CMS | COURSE | ASSIGNMENT
+  createdAt    DateTime @default(now())
+  owner        User?    @relation(fields: [ownerId], references: [id])
+  bulkOrders   BulkOrder[]          @relation("BulkOrderFiles")
+  tailorApplications TailorApplication[] @relation("TailorApplicationFiles")
+  studentApplications StudentApplication[] @relation("StudentApplicationFiles")
+  portfolioItems PortfolioItem[]
+}
+
+// ───────────────────────────── CMS ───────────────────────────────────────────
+
+// Key/value content blocks: hero copy, contact details, stats, image slots...
+model SiteContent {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+  updatedById String?
+}
+
+model Testimonial {
+  id        String   @id @default(cuid())
+  quote     String
+  author    String
+  role      String?
+  published Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+model Faq {
+  id        String  @id @default(cuid())
+  category  String
+  question  String
+  answer    String
+  sortOrder Int     @default(0)
+  published Boolean @default(true)
+}
+
+model BlogPost {
+  id          String    @id @default(cuid())
+  slug        String    @unique
+  title       String
+  excerpt     String
+  body        String
+  category    String
+  coverUploadId String?
+  authorName  String
+  published   Boolean   @default(false)
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Announcement {
+  id        String    @id @default(cuid())
+  message   String
+  link      String?
+  active    Boolean   @default(true)
+  startsAt  DateTime  @default(now())
+  endsAt    DateTime?
+}
+
+model GalleryItem {
+  id        String   @id @default(cuid())
+  uploadId  String
+  caption   String
+  sortOrder Int      @default(0)
+  published Boolean  @default(true)
+}
+
+model Policy {
+  slug      String   @id
+  title     String
+  body      String
+  updatedAt DateTime @updatedAt
+}
+
+// ───────────────────────────── Support ───────────────────────────────────────
+
+enum EnquiryCategory {
+  WORKSPACE_BOOKING
+  BULK_PRODUCTION
+  TAILOR_REGISTRATION
+  ACADEMY
+  PARTNERSHIP
+  GENERAL
+}
+
+model Enquiry {
+  id        String          @id @default(cuid())
+  reference String          @unique
+  category  EnquiryCategory
+  name      String
+  email     String
+  phone     String?
+  company   String?
+  message   String
+  status    String          @default("NEW") // NEW | IN_PROGRESS | RESOLVED
+  handledById String?
+  response  String?
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+}
+
+// ───────────────────────────── Notifications & audit ─────────────────────────
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String?
+  kind      String
+  title     String
+  body      String
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries NotificationDelivery[]
+
+  @@index([userId, readAt])
+}
+
+model NotificationDelivery {
+  id             String       @id @default(cuid())
+  notificationId String
+  channel        String // EMAIL | SMS | WHATSAPP
+  recipient      String
+  status         String       @default("QUEUED") // QUEUED | SENT | FAILED | SKIPPED
+  attempts       Int          @default(0)
+  error          String?
+  sentAt         DateTime?
+  createdAt      DateTime     @default(now())
+  notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String // e.g. booking.approve
+  entityType String
+  entityId   String
+  facilityId String?
+  data       Json?
+  ip         String?
+  createdAt  DateTime @default(now())
+  actor      User?    @relation("AuditActor", fields: [actorId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}

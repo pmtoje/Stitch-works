@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Typecheck, test & build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: stitchworks_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Throwaway CI database and secrets — never real credentials.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/stitchworks_test
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/stitchworks_test
+      APP_URL: http://localhost:3000
+      APP_ENCRYPTION_KEY: ci-only-encryption-key-not-a-secret-000000
+      PAYMENT_PROVIDER: mock
+      CRON_SECRET: ci-only
+      NEXT_TELEMETRY_DISABLED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+
+      - name: Tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
